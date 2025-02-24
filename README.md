@@ -42,7 +42,7 @@ jobs:
 
   # Deploy
   deploy:
-    uses: xSpylon/pipelines/.github/workflows/deploy-v2.0.0.yml@main
+    uses: Stuurmen/pipelines/.github/workflows/deploy-v2.0.0.yml@main
     secrets:
       ssh_private_key: ${{ secrets.DEPLOYMENT_SSH_PRIVATE_KEY }}
 ```
@@ -61,7 +61,7 @@ on:
 
 jobs:
   deploy:
-    uses: xSpylon/pipelines/.github/workflows/deploy-v2.0.0.yml@main
+    uses: Stuurmen/pipelines/.github/workflows/deploy-v2.0.0.yml@main
     secrets:
       ssh_private_key: ${{ secrets.DEPLOYMENT_SSH_PRIVATE_KEY }}
 ```
