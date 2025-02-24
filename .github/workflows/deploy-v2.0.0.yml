@@ -66,10 +66,17 @@ jobs:
     - name: Check out repository code
       uses: actions/checkout@v2
 
-    - name: Use Node.js
+    - name: Use Node.js (staging server)
+      if: ${{ needs.data.outputs.current_branch == needs.data.outputs.staging_branch }}
       uses: actions/setup-node@v3
       with:
-        node-version: ${{ needs.data.source_path }}
+        node-version: ${{ needs.data.staging_node_version }}
+
+    - name: Use Node.js (production server)
+      if: ${{ needs.data.outputs.current_branch == needs.data.outputs.production_branch }}
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ needs.data.production_node_version }}
 
     - name: Install dependencies
       run: npm install
