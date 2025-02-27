@@ -94,7 +94,8 @@ A configuration file that indicates what should be deployed, and where it should
     "node_version": "NODE_VERSION",
   },
   "source": {
-    "path": "PATH_TO_DIST"
+    "path": "PATH_TO_DIST",
+    "package_manager": "PACKAGE_MANAGER"
   }
 }
 ```
@@ -107,7 +108,7 @@ A configuration file that indicates what should be deployed, and where it should
     "host": "12.34.567.890",
     "port": "12345",
     "username": "admin",
-    "path": "./",
+    "path": "./public/wp-content/themes/wordpress-theme-folder",
     "node_version": "20"
   },
   "staging": {
@@ -115,11 +116,12 @@ A configuration file that indicates what should be deployed, and where it should
     "host": "12.34.567.890",
     "port": "67890",
     "username": "admin",
-    "path": "./",
+    "path": "./public/wp-content/themes/wordpress-theme-folder",
     "node_version": "20"
   },
   "source": {
-    "path": "dist/"
+    "path": "",
+    "package_manager": "yarn"
   }
 }
 ```

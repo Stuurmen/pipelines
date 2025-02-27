@@ -36,6 +36,7 @@ jobs:
         echo "staging_path=$(echo $config | jq -r '.staging.path')" >> $GITHUB_ENV
         echo "production_path=$(echo $config | jq -r '.production.path')" >> $GITHUB_ENV
         echo "source_path=$(echo $config | jq -r '.source.path')" >> $GITHUB_ENV
+        echo "source_package_manager=$(echo $config | jq -r '.source.package_manager')" >> $GITHUB_ENV
         echo "production_node_version=$(echo $config | jq -r '.production.node_version')" >> $GITHUB_ENV
         echo "staging_node_version=$(echo $config | jq -r '.staging.node_version')" >> $GITHUB_ENV
 
@@ -43,8 +44,6 @@ jobs:
       current_branch: ${{ env.current_branch }}
       staging_branch: ${{ env.staging_branch }}
       production_branch: ${{ env.production_branch }}
-      staging_url: ${{ env.staging_url }}
-      production_url: ${{ env.production_url }}
       staging_host: ${{ env.staging_host }}
       production_host: ${{ env.production_host }}
       staging_port: ${{ env.staging_port }}
@@ -54,6 +53,7 @@ jobs:
       staging_path: ${{ env.staging_path }}
       production_path: ${{ env.production_path }}
       source_path: ${{ env.source_path }}
+      source_package_manager: ${{ env.source_package_manager }}
       production_node_version: ${{ env.production_node_version }}
       staging_node_version: ${{ env.staging_node_version }}
 
@@ -65,27 +65,63 @@ jobs:
 
     - name: Check out repository code
       uses: actions/checkout@v2
+    
+    - name: Setup yarn
+      if: ${{ needs.data.outputs.source_package_manager == 'yarn' }}
+      run: npm install -g yarn
 
     - name: Use Node.js (staging server)
       if: ${{ needs.data.outputs.current_branch == needs.data.outputs.staging_branch }}
       uses: actions/setup-node@v3
       with:
         node-version: ${{ needs.data.staging_node_version }}
+        cache: ${{ needs.data.outputs.source_package_manager }}
 
     - name: Use Node.js (production server)
       if: ${{ needs.data.outputs.current_branch == needs.data.outputs.production_branch }}
       uses: actions/setup-node@v3
       with:
         node-version: ${{ needs.data.production_node_version }}
+        cache: ${{ needs.data.outputs.source_package_manager }}
 
-    - name: Install dependencies
+    - name: Install dependencies using npm
+      if: ${{ needs.data.outputs.source_package_manager == 'npm' }}
       run: npm install
+      
+
+    - name: Install dependencies using yarn, and force Git to use HTTPS
+      if: ${{ needs.data.outputs.source_package_manager == 'yarn' }}
+      run: | 
+        yarn cache clean
+        git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+        git config --global url."https://github.com/".insteadOf "git@github.com:"
+        yarn config set "npmScopes.default.gitUrl" "https://github.com/"
+        rm -f yarn.lock
+        yarn
+
+    - name: List directory path
+      run: |
+        echo "Current working directory: $PWD"
+        echo "GitHub workspace directory: $GITHUB_WORKSPACE" 
+
+    - name: List directory contents before build
+      run: ls -la
 
     - name: Build project
       run: npm run build --if-present
 
+    - name: List directory contents after build
+      run: ls -la
+
     - name: Run tests
       run: npm test --if-present
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-files
+        path: dist/
+        retention-days: 1
 
   deploy:
     name: Deploy
@@ -95,6 +131,12 @@ jobs:
 
     - name: Check out repository code
       uses: actions/checkout@v2
+
+    - name: Download build artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: build-files
+        path: dist
 
     - name: Deploy to staging server
       if: ${{ needs.data.outputs.current_branch == needs.data.outputs.staging_branch }}
@@ -107,7 +149,7 @@ jobs:
         REMOTE_HOST: ${{ needs.data.outputs.staging_host }}
         REMOTE_PORT: ${{ needs.data.outputs.staging_port }}
         REMOTE_USER: ${{ needs.data.outputs.staging_username }}
-        EXCLUDE: "/dist/, /node_modules/"
+        EXCLUDE: "/node_modules/"
 
     - name: Deploy to production server
       if: ${{ needs.data.outputs.current_branch == needs.data.outputs.production_branch }}
@@ -120,4 +162,4 @@ jobs:
         REMOTE_HOST: ${{ needs.data.outputs.production_host }}
         REMOTE_PORT: ${{ needs.data.outputs.production_port }}
         REMOTE_USER: ${{ needs.data.outputs.production_username }}
-        EXCLUDE: "/dist/, /node_modules/"
+        EXCLUDE: "/node_modules/"
