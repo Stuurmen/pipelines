@@ -74,14 +74,14 @@ jobs:
       if: ${{ needs.data.outputs.current_branch == needs.data.outputs.staging_branch }}
       uses: actions/setup-node@v3
       with:
-        node-version: ${{ needs.data.staging_node_version }}
+        node-version: ${{ needs.data.outputs.staging_node_version }}
         cache: ${{ needs.data.outputs.source_package_manager }}
 
     - name: Use Node.js (production server)
       if: ${{ needs.data.outputs.current_branch == needs.data.outputs.production_branch }}
       uses: actions/setup-node@v3
       with:
-        node-version: ${{ needs.data.production_node_version }}
+        node-version: ${{ needs.data.outputs.production_node_version }}
         cache: ${{ needs.data.outputs.source_package_manager }}
 
     - name: Install dependencies using npm
@@ -92,12 +92,12 @@ jobs:
     - name: Install dependencies using yarn, and force Git to use HTTPS
       if: ${{ needs.data.outputs.source_package_manager == 'yarn' }}
       run: | 
-        yarn cache clean
         git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
         git config --global url."https://github.com/".insteadOf "git@github.com:"
         yarn config set "npmScopes.default.gitUrl" "https://github.com/"
-        rm -f yarn.lock
-        yarn
+        rm -rf node_modules yarn.lock
+        yarn cache clean --force
+        yarn install
 
     - name: List directory path
       run: |
