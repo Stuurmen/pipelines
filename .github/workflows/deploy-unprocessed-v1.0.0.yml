@@ -1,0 +1,85 @@
+name: Deploy unprocessed v1.0.0
+
+on:
+  workflow_call:
+    secrets:
+      ssh_private_key:
+        required: true
+
+jobs:
+
+  data:
+    name: Get Data
+    runs-on: ubuntu-latest
+    steps:
+
+    - name: Check out repository code
+      uses: actions/checkout@v2
+
+    - name: Load pipeline configuration
+      id: load_pipeline
+      run: echo "config=$(cat pipeline.json | jq -c .)" >> $GITHUB_ENV
+
+    - name: Extract properties
+      run: |
+        echo "current_branch=$(echo ${GITHUB_REF#refs/heads/})" >> $GITHUB_ENV
+        echo "staging_branch=$(echo $config | jq -r '.staging.branch')" >> $GITHUB_ENV
+        echo "production_branch=$(echo $config | jq -r '.production.branch')" >> $GITHUB_ENV
+        echo "staging_url=$(echo $config | jq -r '.staging.url')" >> $GITHUB_ENV
+        echo "production_url=$(echo $config | jq -r '.production.url')" >> $GITHUB_ENV
+        echo "staging_host=$(echo $config | jq -r '.staging.host')" >> $GITHUB_ENV
+        echo "production_host=$(echo $config | jq -r '.production.host')" >> $GITHUB_ENV
+        echo "staging_port=$(echo $config | jq -r '.staging.port')" >> $GITHUB_ENV
+        echo "production_port=$(echo $config | jq -r '.production.port')" >> $GITHUB_ENV
+        echo "staging_username=$(echo $config | jq -r '.staging.username')" >> $GITHUB_ENV
+        echo "production_username=$(echo $config | jq -r '.production.username')" >> $GITHUB_ENV
+        echo "staging_path=$(echo $config | jq -r '.staging.path')" >> $GITHUB_ENV
+        echo "production_path=$(echo $config | jq -r '.production.path')" >> $GITHUB_ENV
+        echo "source_path=$(echo $config | jq -r '.source.path')" >> $GITHUB_ENV
+
+    outputs:
+      current_branch: ${{ env.current_branch }}
+      staging_branch: ${{ env.staging_branch }}
+      production_branch: ${{ env.production_branch }}
+      staging_host: ${{ env.staging_host }}
+      production_host: ${{ env.production_host }}
+      staging_port: ${{ env.staging_port }}
+      production_port: ${{ env.production_port }}
+      staging_username: ${{ env.staging_username }}
+      production_username: ${{ env.production_username }}
+      staging_path: ${{ env.staging_path }}
+      production_path: ${{ env.production_path }}
+      source_path: ${{ env.source_path }}
+
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    needs: [data]
+    steps:
+
+    - name: Check out repository code
+      uses: actions/checkout@v2
+
+    - name: Deploy to staging server
+      if: ${{ needs.data.outputs.current_branch == needs.data.outputs.staging_branch }}
+      uses: easingthemes/ssh-deploy@main
+      env:
+        SSH_PRIVATE_KEY: ${{ secrets.ssh_private_key }}
+        ARGS: "-rltgoDzvO"
+        SOURCE: ${{ needs.data.outputs.source_path }}
+        TARGET: ${{ needs.data.outputs.staging_path }}
+        REMOTE_HOST: ${{ needs.data.outputs.staging_host }}
+        REMOTE_PORT: ${{ needs.data.outputs.staging_port }}
+        REMOTE_USER: ${{ needs.data.outputs.staging_username }}
+
+    - name: Deploy to production server
+      if: ${{ needs.data.outputs.current_branch == needs.data.outputs.production_branch }}
+      uses: easingthemes/ssh-deploy@main
+      env:
+        SSH_PRIVATE_KEY: ${{ secrets.ssh_private_key }}
+        ARGS: "-rltgoDzvO"
+        SOURCE: ${{ needs.data.outputs.source_path }}
+        TARGET: ${{ needs.data.outputs.production_path }}
+        REMOTE_HOST: ${{ needs.data.outputs.production_host }}
+        REMOTE_PORT: ${{ needs.data.outputs.production_port }}
+        REMOTE_USER: ${{ needs.data.outputs.production_username }}
