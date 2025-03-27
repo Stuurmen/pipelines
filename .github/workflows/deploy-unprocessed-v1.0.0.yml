@@ -5,6 +5,7 @@ on:
     secrets:
       ssh_private_key:
         required: true
+  workflow_dispatch: # Triggered manually 
 
 jobs:
 
