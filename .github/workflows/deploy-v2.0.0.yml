@@ -85,20 +85,24 @@ jobs:
         node-version: ${{ needs.data.outputs.production_node_version }}
         cache: ${{ needs.data.outputs.source_package_manager }}
 
+    # Legacy imagemin binaries (pngquant-bin, etc.) may compile from source on
+    # modern runners when prebuilds fail; libpng-dev is required for that.
+    - name: Install native build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libpng-dev
+
     - name: Install dependencies using npm
       if: ${{ needs.data.outputs.source_package_manager == 'npm' }}
       run: npm install
-      
 
     - name: Install dependencies using yarn, and force Git to use HTTPS
       if: ${{ needs.data.outputs.source_package_manager == 'yarn' }}
-      run: | 
+      run: |
         git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
         git config --global url."https://github.com/".insteadOf "git@github.com:"
         yarn config set "npmScopes.default.gitUrl" "https://github.com/"
-        rm -rf node_modules yarn.lock
-        yarn cache clean --force
-        yarn install
+        yarn install --frozen-lockfile
 
     - name: List directory path
       run: |
