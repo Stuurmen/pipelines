@@ -1,0 +1,240 @@
+name: Deploy v2.1.0
+
+on:
+  workflow_call:
+    inputs:
+      dry_run:
+        description: Build and assemble the release without connecting to a server. The release is uploaded as an artifact instead.
+        type: boolean
+        default: false
+    secrets:
+      ssh_private_key:
+        description: Private SSH key that can log in to the server. Not needed for a dry run.
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+
+  config:
+    name: Read pipeline.json
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.config.outputs.environment }}
+      url: ${{ steps.config.outputs.url }}
+    steps:
+
+    - name: Check out repository code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    # Fails the run on anything that would otherwise deploy nothing, or deploy somewhere unsafe
+    - name: Validate pipeline.json and pick the environment
+      id: config
+      env:
+        BRANCH: ${{ github.head_ref || github.ref_name }}
+        DRY_RUN: ${{ inputs.dry_run }}
+      run: |
+        set -euo pipefail
+        fail() { echo "::error file=pipeline.json::$1"; exit 1; }
+
+        [ -f pipeline.json ] || fail "pipeline.json was not found in the root of the repository."
+        jq empty pipeline.json 2>/dev/null || fail "pipeline.json is not valid JSON."
+
+        if [ "$BRANCH" = "$(jq -r '.production.branch // empty' pipeline.json)" ]; then
+          environment=production
+        elif [ "$BRANCH" = "$(jq -r '.staging.branch // empty' pipeline.json)" ]; then
+          environment=staging
+        elif [ "$DRY_RUN" = true ]; then
+          environment=production
+        else
+          fail "Branch '$BRANCH' is neither the production nor the staging branch in pipeline.json, so there is nothing to deploy."
+        fi
+
+        get() { jq -r --arg e "$environment" --arg k "$1" '.[$e][$k] // empty' pipeline.json; }
+        src() { jq -r --arg k "$1" '.source[$k] // empty' pipeline.json; }
+
+        required=(path)
+        [ "$DRY_RUN" = true ] || required+=(host port username)
+        [ -f package.json ] && required+=(node_version)
+        for key in "${required[@]}"; do
+          [ -n "$(get "$key")" ] || fail "$environment.$key is missing in pipeline.json."
+        done
+
+        path="$(get path)"
+        [[ "$path" =~ ^[A-Za-z0-9._/~-]+$ ]] || fail "$environment.path '$path' may only contain letters, digits and . _ / ~ -"
+        trimmed="${path%/}"
+        case "$trimmed" in ""|.|./|/|"~"|*..*) fail "$environment.path '$path' is not a safe deploy target." ;; esac
+        if [ "$(src delete)" = true ]; then
+          case "${trimmed##*/}" in
+            themes|plugins|wp-content|public|public_html|www|htdocs|httpdocs|html)
+              fail "source.delete is on, and $environment.path '$path' points at a shared folder. Point it at the theme or plugin folder itself." ;;
+          esac
+        fi
+
+        case "$(src package_manager)" in ""|yarn|npm) ;; *) fail "source.package_manager must be yarn, npm or empty." ;; esac
+
+        if [ "$(src composer)" = true ]; then
+          [ -f composer.json ] || fail "source.composer is on, but there is no composer.json."
+          [ -n "$(src php_version)" ] || fail "source.composer is on, so source.php_version is required."
+        fi
+
+        echo "environment=$environment" >> "$GITHUB_OUTPUT"
+        echo "url=$(get url)" >> "$GITHUB_OUTPUT"
+        echo "Branch '$BRANCH' deploys to $environment$([ "$DRY_RUN" = true ] && echo ' (dry run)' || true)."
+
+  deploy:
+    name: ${{ inputs.dry_run && 'Build (dry run)' || format('Deploy to {0}', needs.config.outputs.environment) }}
+    runs-on: ubuntu-latest
+    needs: [config]
+    environment:
+      name: ${{ !inputs.dry_run && needs.config.outputs.environment || '' }}
+      url: ${{ !inputs.dry_run && needs.config.outputs.url || '' }}
+    # One deploy per environment at a time, so an older run can never finish after a newer one
+    concurrency:
+      group: deploy-${{ github.repository }}-${{ needs.config.outputs.environment }}${{ inputs.dry_run && format('-dry-run-{0}', github.run_id) || '' }}
+      cancel-in-progress: false
+    env:
+      ENVIRONMENT: ${{ needs.config.outputs.environment }}
+    steps:
+
+    - name: Check out repository code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - name: Load settings
+      id: settings
+      run: |
+        set -euo pipefail
+        get() { jq -r --arg e "$ENVIRONMENT" --arg k "$1" '.[$e][$k] // empty' pipeline.json; }
+        src() { jq -r --arg k "$1" '.source[$k] // empty' pipeline.json; }
+        {
+          echo "node_version=$(get node_version)"
+          echo "package_manager=$(src package_manager)"
+          echo "has_package_json=$([ -f package.json ] && echo true || echo false)"
+          echo "composer=$(src composer)"
+          echo "php_version=$(src php_version)"
+        } >> "$GITHUB_OUTPUT"
+
+    # Legacy imagemin binaries (pngquant-bin, etc.) may compile from source on
+    # modern runners when prebuilds fail; libpng-dev is required for that.
+    - name: Install native build dependencies
+      if: ${{ steps.settings.outputs.has_package_json == 'true' }}
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libpng-dev
+
+    - name: Use Node.js
+      if: ${{ steps.settings.outputs.has_package_json == 'true' }}
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: ${{ steps.settings.outputs.node_version }}
+
+    - name: Install dependencies using npm
+      if: ${{ steps.settings.outputs.package_manager == 'npm' }}
+      run: |
+        if [ -f package-lock.json ]; then npm ci; else npm install; fi
+
+    - name: Install dependencies using yarn, and force Git to use HTTPS
+      if: ${{ steps.settings.outputs.package_manager == 'yarn' }}
+      run: |
+        command -v yarn >/dev/null || npm install -g yarn
+        git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+        git config --global --add url."https://github.com/".insteadOf "git@github.com:"
+        yarn config set "npmScopes.default.gitUrl" "https://github.com/"
+        yarn install --frozen-lockfile
+
+    # Sage's "build" script is a development build; ship the production one when there is one
+    - name: Build project
+      if: ${{ steps.settings.outputs.has_package_json == 'true' }}
+      run: |
+        if jq -e '.scripts["build:production"]' package.json >/dev/null; then
+          npm run build:production
+        else
+          npm run build --if-present
+        fi
+
+    - name: Run tests
+      if: ${{ steps.settings.outputs.has_package_json == 'true' }}
+      run: npm test --if-present
+
+    - name: Use PHP
+      if: ${{ steps.settings.outputs.composer == 'true' }}
+      uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+      with:
+        php-version: ${{ steps.settings.outputs.php_version }}
+        tools: composer:v2
+        coverage: none
+
+    - name: Install Composer dependencies
+      if: ${{ steps.settings.outputs.composer == 'true' }}
+      run: composer install --no-dev --optimize-autoloader --no-interaction --no-progress
+
+    # Copies the files to deploy into a clean folder, leaving out everything a server should never serve.
+    # Top-level dotfiles (.git, .github, .cache-loader, editor and linter config) stay behind, except .htaccess.
+    - name: Assemble release
+      run: |
+        set -euo pipefail
+        source_path="$(jq -r '.source.path // empty' pipeline.json)"
+        source_path="${source_path:-.}"
+        [ -d "$source_path" ] || { echo "::error file=pipeline.json::source.path '$source_path' does not exist after the build."; exit 1; }
+        command -v rsync >/dev/null || { sudo apt-get update && sudo apt-get install -y rsync; }
+
+        cat > "$RUNNER_TEMP/excludes" <<'EOF'
+        + /.htaccess
+        /.*
+        .git/
+        node_modules/
+        /pipeline.json
+        .env
+        .env.*
+        /*.md
+        /package.json
+        /package-lock.json
+        /yarn.lock
+        /composer.json
+        /composer.lock
+        /phpcs.xml
+        /phpcs.xml.dist
+        EOF
+        jq -r '.source.exclude // [] | .[]' pipeline.json >> "$RUNNER_TEMP/excludes"
+
+        mkdir -p "$RUNNER_TEMP/release"
+        rsync -a --exclude-from="$RUNNER_TEMP/excludes" "${source_path%/}/" "$RUNNER_TEMP/release/"
+        echo "Release contains $(find "$RUNNER_TEMP/release" -type f | wc -l) files."
+
+    - name: Upload release (dry run)
+      if: ${{ inputs.dry_run }}
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: release-${{ needs.config.outputs.environment }}
+        path: ${{ runner.temp }}/release
+        include-hidden-files: true
+        retention-days: 7
+
+    - name: Deploy to ${{ needs.config.outputs.environment }} server
+      if: ${{ !inputs.dry_run }}
+      env:
+        SSH_PRIVATE_KEY: ${{ secrets.ssh_private_key }}
+      run: |
+        set -euo pipefail
+        get() { jq -r --arg e "$ENVIRONMENT" --arg k "$1" '.[$e][$k] // empty' pipeline.json; }
+        [ -n "$SSH_PRIVATE_KEY" ] || { echo "::error::The ssh_private_key secret is empty. Pass it from the calling workflow."; exit 1; }
+
+        host="$(get host)"; port="$(get port)"; user="$(get username)"; target="$(get path)"; target="${target%/}"
+
+        key="$RUNNER_TEMP/deploy_key"
+        printf '%s\n' "$SSH_PRIVATE_KEY" > "$key"
+        chmod 600 "$key"
+        # The server's host key is not checked, a deliberate trade-off for easy setup (docs/adr/0001)
+        ssh_cmd="ssh -p $port -i $key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+
+        args=(-rltzO --itemize-changes -e "$ssh_cmd")
+        [ "$(jq -r '.source.delete // false' pipeline.json)" = true ] && args+=(--delete)
+        # Without Composer in the pipeline, vendor/ on the server is managed by hand, so never touch it
+        [ "$(jq -r '.source.composer // false' pipeline.json)" = true ] || args+=(--exclude=/vendor/)
+
+        rsync "${args[@]}" "$RUNNER_TEMP/release/" "$user@$host:$target/"
+        # Older pipeline versions copied pipeline.json, which holds the server details, into a public folder
+        $ssh_cmd "$user@$host" "rm -f -- '$target/pipeline.json'"
+
+        echo "### Deployed $(git rev-parse --short HEAD) to $ENVIRONMENT" >> "$GITHUB_STEP_SUMMARY"

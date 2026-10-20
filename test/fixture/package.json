@@ -1,0 +1,9 @@
+{
+  "name": "pipeline-fixture",
+  "private": true,
+  "scripts": {
+    "build": "mkdir -p dist && echo '/* development build */' > dist/app.css",
+    "build:production": "mkdir -p dist && echo 'production-build' > dist/app.css",
+    "test": "test -f dist/app.css"
+  }
+}
