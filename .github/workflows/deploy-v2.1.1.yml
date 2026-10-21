@@ -1,4 +1,4 @@
-name: Deploy v2.1.0
+name: Deploy v2.1.1
 
 on:
   workflow_call:
@@ -140,7 +140,6 @@ jobs:
         command -v yarn >/dev/null || npm install -g yarn
         git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
         git config --global --add url."https://github.com/".insteadOf "git@github.com:"
-        yarn config set "npmScopes.default.gitUrl" "https://github.com/"
         yarn install --frozen-lockfile
 
     # Sage's "build" script is a development build; ship the production one when there is one
