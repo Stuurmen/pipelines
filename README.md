@@ -4,11 +4,12 @@ Reusable GitHub Actions workflows that deploy Stuurmen projects, mostly WordPres
 
 | Workflow | Status |
 | --- | --- |
-| `deploy-v2.1.0.yml` | Current. Use this for new projects. |
-| `deploy-v2.0.0.yml` | Used by the existing projects. Move them to v2.1.0 (see [Migrating from v2.0.0](#migrating-from-v200)). |
+| `deploy-v2.1.1.yml` | Current. Use this for new projects. |
+| `deploy-v2.1.0.yml` (tag `v2.1.0`) | Works for Yarn 1 and npm projects, fails on Yarn 4 projects. Move to v2.1.1 when convenient. |
+| `deploy-v2.0.0.yml` | Older projects. Move them to v2.1.1 (see [Migrating from v2.0.0](#migrating-from-v200)). |
 | `deploy-v1.0.0.yml`, `deploy-unprocessed-v1.0.0.yml` | Legacy. No project uses them. |
 
-## Deploy v2.1.0
+## Deploy v2.1.1
 
 On every push to the staging or production branch, the workflow:
 
@@ -36,7 +37,7 @@ on:
 
 jobs:
   deploy:
-    uses: Stuurmen/pipelines/.github/workflows/deploy-v2.1.0.yml@v2.1.0
+    uses: Stuurmen/pipelines/.github/workflows/deploy-v2.1.1.yml@v2.1.1
     secrets:
       ssh_private_key: ${{ secrets.DEPLOYMENT_SSH_PRIVATE_KEY }}
 ```
@@ -89,7 +90,7 @@ Under `source`:
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `path` | `""` (the whole repository) | Folder to deploy, for example `dist/`. |
-| `package_manager` | `""` (no install) | `yarn` or `npm`. |
+| `package_manager` | `""` (no install) | `yarn` or `npm`. Yarn 2 and later only work when the project pins its version with `yarn set version` (`yarnPath` in `.yarnrc.yml`); otherwise the runner's Yarn 1 can't read the lockfile. |
 | `composer` | `false` | Run `composer install --no-dev` and deploy `vendor/`. When off, `vendor/` on the server is never touched. Composer 2.2 and later refuse a lockfile without an `allow-plugins` section, which most Sage 9 themes lack: add `config.allow-plugins` to `composer.json` and run `composer update --lock` before you turn this on. |
 | `php_version` | | PHP version for Composer. Required when `composer` is on. Use a version every package in `composer.lock` accepts (for Sage 9 themes that is usually `7.4`). |
 | `delete` | `false` | Remove files on the server that are no longer in the release. Refused when `path` points at a shared folder such as `themes` or `public_html`. |
@@ -102,14 +103,14 @@ Pass `dry_run: true` to build and assemble the release without connecting to a s
 ```yaml
 jobs:
   build:
-    uses: Stuurmen/pipelines/.github/workflows/deploy-v2.1.0.yml@v2.1.0
+    uses: Stuurmen/pipelines/.github/workflows/deploy-v2.1.1.yml@v2.1.1
     with:
       dry_run: true
 ```
 
 ### Migrating from v2.0.0
 
-1. Point `uses:` at `deploy-v2.1.0.yml@v2.1.0`. `pipeline.json` needs no changes.
+1. Point `uses:` at `deploy-v2.1.1.yml@v2.1.1`. `pipeline.json` needs no changes.
 2. Check what changes for the project:
    - Projects with a `build:production` script now ship that build. For Sage 9 themes that means minified, versioned assets instead of the development build.
    - `pipeline.json`, `README.md`, `package.json` and the other files listed above are no longer copied, and the first deploy removes the `pipeline.json` that v2.0.0 left on the server.
@@ -117,7 +118,7 @@ jobs:
 
 ## Testing
 
-`test/run.sh` runs the real workflow with [act](https://github.com/nektos/act) against a throwaway SSH server in Docker. It covers a staging deploy with Composer, a production deploy with `delete`, a dry run, and the cases that must fail: an unknown branch, invalid JSON, an unsafe path, and `delete` on a shared folder.
+`test/run.sh` runs the real workflow with [act](https://github.com/nektos/act) against a throwaway SSH server in Docker. It covers a staging deploy with Composer, a production deploy with `delete`, a dry run, Yarn 1 and Yarn 4 projects, and the cases that must fail: an unknown branch, invalid JSON, an unsafe path, and `delete` on a shared folder.
 
 ```bash
 brew install act
