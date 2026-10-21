@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# End-to-end test for deploy-v2.1.0: runs the real workflow with act against a throwaway SSH server.
+# End-to-end test for deploy-v2.1.1: runs the real workflow with act against a throwaway SSH server.
 # Needs Docker and act (brew install act). Usage: test/run.sh [scenario ...]
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-WORKFLOW="$ROOT/.github/workflows/deploy-v2.1.0.yml"
+WORKFLOW="$ROOT/.github/workflows/deploy-v2.1.1.yml"
 WORK="$(mktemp -d)"
 NET=pipeline-test-net
 SSHD=pipeline-test-sshd
@@ -37,13 +37,13 @@ project() {
   mkdir -p "$dir/.github/workflows"
   # act's artifact server only speaks the upload-artifact v4 protocol; this is the one change to the workflow under test
   sed -E 's|actions/upload-artifact@[0-9a-f]{40}.*|actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2 (act)|' \
-    "$WORKFLOW" > "$dir/.github/workflows/deploy-v2.1.0.yml"
+    "$WORKFLOW" > "$dir/.github/workflows/deploy-v2.1.1.yml"
   printf '%s\n' "$2" > "$dir/pipeline.json"
   cat > "$dir/.github/workflows/caller.yml" <<EOF
 on: push
 jobs:
   deploy:
-    uses: ./.github/workflows/deploy-v2.1.0.yml
+    uses: ./.github/workflows/deploy-v2.1.1.yml
     with:
       dry_run: ${3:-false}
     secrets:
@@ -127,6 +127,30 @@ invalid_json()     { expect_failure d dev '{ "staging": { "branch": "dev", }, }'
 delete_on_shared_folder() { expect_failure g dev "$(config staging ./public/wp-content/themes '{"delete": true}')" "points at a shared folder"; }
 unsafe_path()      { expect_failure h dev "$(config staging "./public/x'; rm -rf ~; '")" "may only contain"; }
 
+# A Yarn 1 project, like the other Sage 9 themes
+yarn1_project() {
+  server "mkdir -p $THEMES/k && chown -R deploy $THEMES/k"
+  local dir; dir="$(project dev "$(config staging ./public/wp-content/themes/k '{"package_manager": "yarn"}')")"
+  (cd "$dir" && npx -y yarn@1.22.22 install >/dev/null 2>&1 && git add -A && git -c user.email=test@example.com -c user.name=test commit -q -m yarn1)
+  local ok=0
+  check "run succeeds" 'run_act "$dir"' || ok=1
+  check "production build shipped" 'server "grep -q production-build $THEMES/k/dist/app.css"' || ok=1
+  return $ok
+}
+
+# A Yarn 4 project (yarnPath in .yarnrc.yml): the runner's Yarn 1 hands over to it
+yarn4_project() {
+  server "mkdir -p $THEMES/j && chown -R deploy $THEMES/j"
+  local dir; dir="$(project dev "$(config staging ./public/wp-content/themes/j '{"package_manager": "yarn"}')")"
+  (cd "$dir" && npx -y yarn@1.22.22 set version 4.18.1 >/dev/null && YARN_ENABLE_IMMUTABLE_INSTALLS=0 node .yarn/releases/yarn-4.18.1.cjs install >/dev/null \
+    && git add -A && git -c user.email=test@example.com -c user.name=test commit -q -m yarn4)
+  local ok=0
+  check "run succeeds" 'run_act "$dir"' || ok=1
+  check "production build shipped" 'server "grep -q production-build $THEMES/j/dist/app.css"' || ok=1
+  check ".yarn/ and .yarnrc.yml not on server" '! exists j/.yarn && ! exists j/.yarnrc.yml' || ok=1
+  return $ok
+}
+
 dry_run_on_feature_branch() {
   server "mkdir -p $THEMES/i && echo marker > $THEMES/i/marker.txt && chown -R deploy $THEMES/i"
   local dir; dir="$(project feature/x "$(config production ./public/wp-content/themes/i)" true)"
@@ -147,6 +171,8 @@ scenario invalid_json invalid_json
 scenario delete_on_shared_folder delete_on_shared_folder
 scenario unsafe_path unsafe_path
 scenario dry_run_on_feature_branch dry_run_on_feature_branch
+scenario yarn1_project yarn1_project
+scenario yarn4_project yarn4_project
 
 echo
 echo "$PASS passed, $FAIL failed${FAILED:+:$FAILED}"
