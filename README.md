@@ -1,23 +1,25 @@
 # Pipelines
 
-Reusable GitHub Actions workflows that deploy Stuurmen projects, mostly WordPress themes, to a staging and a production server over SSH.
+Reusable GitHub Actions workflows that build a project and deploy it to a staging and a production server over SSH.
 
 | Workflow | Status |
 | --- | --- |
-| `deploy-v2.1.1.yml` | Current. Use this for new projects. |
-| `deploy-v2.1.0.yml` (tag `v2.1.0`) | Works for Yarn 1 and npm projects, fails on Yarn 4 projects. Move to v2.1.1 when convenient. |
-| `deploy-v2.0.0.yml` | Older projects. Move them to v2.1.1 (see [Migrating from v2.0.0](#migrating-from-v200)). |
+| `deploy-v2.2.0.yml` | Current. Use this for new projects. |
+| `deploy-v2.1.1.yml` (tag `v2.1.1`) | Same as v2.2.0 without the PHP checks. Move to v2.2.0 (see [Moving from v2.1.x](#moving-from-v21x)). |
+| `deploy-v2.1.0.yml` (tag `v2.1.0`) | Works for Yarn 1 and npm projects, fails on Yarn 4 projects. |
+| `deploy-v2.0.0.yml` | Older projects. Move them to v2.2.0 (see [Migrating from v2.0.0](#migrating-from-v200)). |
 | `deploy-v1.0.0.yml`, `deploy-unprocessed-v1.0.0.yml` | Legacy. No project uses them. |
 
-## Deploy v2.1.1
+## Deploy v2.2.0
 
 On every push to the staging or production branch, the workflow:
 
 1. Reads `pipeline.json` and fails the run if it is missing or invalid, or if the branch belongs to neither environment. A green run always means something was deployed.
 2. Installs the Node dependencies with yarn or npm, runs `build:production` when the project has it (otherwise `build`), then `npm test`.
-3. Runs `composer install --no-dev` when `source.composer` is on.
-4. Copies the files into a clean release, leaving out what a server should never serve: every top-level dotfile except `.htaccess` (so `.git/`, `.github/`, `.cache-loader/` and editor and linter config), `node_modules/`, `pipeline.json`, `.env` files, Markdown files, `phpcs.xml`, and the package and Composer manifests and lockfiles.
-5. Uploads the release with rsync over SSH.
+3. Lints every PHP file with `php -l` on the project's PHP version, then runs PHPCS with the project's own config (`phpcs.xml`, `phpcs.xml.dist`, `.phpcs.xml` or `ruleset.xml`). Errors fail the run; warnings are reported but don't.
+4. Runs `composer install --no-dev` when `source.composer` is on.
+5. Copies the files into a clean release, leaving out what a server should never serve: every top-level dotfile except `.htaccess` (so `.git/`, `.github/`, `.cache-loader/` and editor and linter config), `node_modules/`, `pipeline.json`, `.env` files, Markdown files, PHPCS configs, and the package and Composer manifests and lockfiles.
+6. Uploads the release with rsync over SSH.
 
 Only one deploy per environment runs at a time, and each one shows up under Environments in the project's repository.
 
@@ -37,7 +39,7 @@ on:
 
 jobs:
   deploy:
-    uses: Stuurmen/pipelines/.github/workflows/deploy-v2.1.1.yml@v2.1.1
+    uses: Stuurmen/pipelines/.github/workflows/deploy-v2.2.0.yml@v2.2.0
     secrets:
       ssh_private_key: ${{ secrets.DEPLOYMENT_SSH_PRIVATE_KEY }}
 ```
@@ -91,8 +93,9 @@ Under `source`:
 | --- | --- | --- |
 | `path` | `""` (the whole repository) | Folder to deploy, for example `dist/`. |
 | `package_manager` | `""` (no install) | `yarn` or `npm`. Yarn 2 and later only work when the project pins its version with `yarn set version` (`yarnPath` in `.yarnrc.yml`); otherwise the runner's Yarn 1 can't read the lockfile. |
-| `composer` | `false` | Run `composer install --no-dev` and deploy `vendor/`. When off, `vendor/` on the server is never touched. Composer 2.2 and later refuse a lockfile without an `allow-plugins` section, which most Sage 9 themes lack: add `config.allow-plugins` to `composer.json` and run `composer update --lock` before you turn this on. |
-| `php_version` | | PHP version for Composer. Required when `composer` is on. Use a version every package in `composer.lock` accepts (for Sage 9 themes that is usually `7.4`). |
+| `composer` | `false` | Run `composer install --no-dev` and deploy `vendor/`. When off, `vendor/` on the server is never touched. Composer 2.2 and later refuse a lockfile without an `allow-plugins` section, which older projects often lack: add `config.allow-plugins` to `composer.json` and run `composer update --lock` before you turn this on. |
+| `php_version` | | The PHP version the server runs, used for PHP lint, PHPCS and Composer. Required when the project has PHP files or `composer` is on. Use a version every package in `composer.lock` accepts. |
+| `phpcs` | `true` | Run PHPCS. The pipeline brings PHPCS 3.13.6 and uses the project's config; a config without `<file>` entries scans the whole project. Only PHPCS's built-in standards (such as PSR12) are supported; a ruleset that uses WPCS or another external standard fails with a message saying so. Set to `false` only for a project that doesn't pass yet. |
 | `delete` | `false` | Remove files on the server that are no longer in the release. Refused when `path` points at a shared folder such as `themes` or `public_html`. |
 | `exclude` | `[]` | Extra rsync patterns to leave out of the release, for example `["/resources/assets/"]`. |
 
@@ -103,28 +106,34 @@ Pass `dry_run: true` to build and assemble the release without connecting to a s
 ```yaml
 jobs:
   build:
-    uses: Stuurmen/pipelines/.github/workflows/deploy-v2.1.1.yml@v2.1.1
+    uses: Stuurmen/pipelines/.github/workflows/deploy-v2.2.0.yml@v2.2.0
     with:
       dry_run: true
 ```
 
+### Moving from v2.1.x
+
+1. Point `uses:` at `deploy-v2.2.0.yml@v2.2.0`.
+2. Add `php_version` under `source` in `pipeline.json`: the PHP version the server runs. A project with PHP files fails without it.
+3. PHPCS is on by default, and projects that were never checked usually fail it. Run `phpcbf` with the project's config to fix layout errors, exclude rules the code can't follow in its `phpcs.xml`, and check the result on staging. Until the project passes, set `"phpcs": false` in `pipeline.json`.
+
 ### Migrating from v2.0.0
 
-1. Point `uses:` at `deploy-v2.1.1.yml@v2.1.1`. `pipeline.json` needs no changes.
+1. Point `uses:` at `deploy-v2.2.0.yml@v2.2.0`. Then follow steps 2 and 3 of [Moving from v2.1.x](#moving-from-v21x): `php_version` and PHPCS.
 2. Check what changes for the project:
-   - Projects with a `build:production` script now ship that build. For Sage 9 themes that means minified, versioned assets instead of the development build.
+   - Projects with a `build:production` script now ship that build instead of the development build.
    - `pipeline.json`, `README.md`, `package.json` and the other files listed above are no longer copied, and the first deploy removes the `pipeline.json` that v2.0.0 left on the server.
    - Leave `composer` and `delete` off unless you want them. Without them, files that are already on the server stay there, and `vendor/` is never touched.
 
 ## Testing
 
-`test/run.sh` runs the real workflow with [act](https://github.com/nektos/act) against a throwaway SSH server in Docker. It covers a staging deploy with Composer, a production deploy with `delete`, a dry run, Yarn 1 and Yarn 4 projects, and the cases that must fail: an unknown branch, invalid JSON, an unsafe path, and `delete` on a shared folder.
+`test/run.sh` runs the real workflow with [act](https://github.com/nektos/act) against a throwaway SSH server in Docker. It covers a staging deploy with Composer, a production deploy with `delete`, a dry run, Yarn 1 and Yarn 4 projects, PHPCS switched off and a `ruleset.xml` without file list, and the cases that must fail: an unknown branch, invalid JSON, a PHP syntax error, a PHPCS error, a missing PHPCS config, `phpcs` as a string, a missing `php_version`, a ruleset with an external standard, an unsafe path, and `delete` on a shared folder.
 
 ```bash
 brew install act
 test/run.sh
 ```
 
-Run a single scenario with `test/run.sh unsafe_path`. The script swaps `upload-artifact` for v4 because act's artifact server doesn't support newer versions; everything else runs as published. On Apple silicon, Sage 9 themes need `--container-architecture linux/amd64` because node-sass has no arm64 Linux build.
+Run a single scenario with `test/run.sh unsafe_path`. The script swaps `upload-artifact` for v4 because act's artifact server doesn't support newer versions; everything else runs as published. On Apple silicon, projects that use node-sass need `--container-architecture linux/amd64`, because node-sass has no arm64 Linux build.
 
 Design decisions are recorded in [docs/adr](docs/adr).

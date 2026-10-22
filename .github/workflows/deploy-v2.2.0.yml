@@ -1,4 +1,4 @@
-name: Deploy v2.1.1
+name: Deploy v2.2.0
 
 on:
   workflow_call:
@@ -74,9 +74,15 @@ jobs:
 
         case "$(src package_manager)" in ""|yarn|npm) ;; *) fail "source.package_manager must be yarn, npm or empty." ;; esac
 
+        case "$(jq -r '.source.phpcs | if . == null then "unset" elif type == "boolean" then tostring else "invalid" end' pipeline.json)" in unset|true|false) ;; *) fail "source.phpcs must be true or false." ;; esac
+
         if [ "$(src composer)" = true ]; then
           [ -f composer.json ] || fail "source.composer is on, but there is no composer.json."
           [ -n "$(src php_version)" ] || fail "source.composer is on, so source.php_version is required."
+        fi
+        # PHP lint has to run on the server's PHP version, so there is no default
+        if [ -n "$(find . -name '*.php' -not -path './vendor/*' -not -path './node_modules/*' -print -quit)" ] && [ -z "$(src php_version)" ]; then
+          fail "The project has PHP files, so source.php_version is required: the PHP version the server runs."
         fi
 
         echo "environment=$environment" >> "$GITHUB_OUTPUT"
@@ -113,6 +119,14 @@ jobs:
           echo "has_package_json=$([ -f package.json ] && echo true || echo false)"
           echo "composer=$(src composer)"
           echo "php_version=$(src php_version)"
+          has_php=$([ -n "$(find . -name '*.php' -not -path './vendor/*' -not -path './node_modules/*' -print -quit)" ] && echo true || echo false)
+          phpcs=$(jq -r 'if .source.phpcs == false then "false" else "true" end' pipeline.json)
+          echo "has_php=$has_php"
+          echo "phpcs=$phpcs"
+          tools=""
+          [ "$(src composer)" = true ] && tools="composer:v2"
+          [ "$has_php" = true ] && [ "$phpcs" = true ] && tools="${tools:+$tools, }phpcs:3.13.6"
+          echo "php_tools=${tools:-none}"
         } >> "$GITHUB_OUTPUT"
 
     # Legacy imagemin binaries (pngquant-bin, etc.) may compile from source on
@@ -142,7 +156,7 @@ jobs:
         git config --global --add url."https://github.com/".insteadOf "git@github.com:"
         yarn install --frozen-lockfile
 
-    # Sage's "build" script is a development build; ship the production one when there is one
+    # A project's "build" script can be a development build; ship the production one when there is one
     - name: Build project
       if: ${{ steps.settings.outputs.has_package_json == 'true' }}
       run: |
@@ -157,12 +171,52 @@ jobs:
       run: npm test --if-present
 
     - name: Use PHP
-      if: ${{ steps.settings.outputs.composer == 'true' }}
+      if: ${{ steps.settings.outputs.composer == 'true' || steps.settings.outputs.has_php == 'true' }}
       uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
       with:
         php-version: ${{ steps.settings.outputs.php_version }}
-        tools: composer:v2
+        tools: ${{ steps.settings.outputs.php_tools }}
         coverage: none
+
+    - name: PHP lint
+      if: ${{ steps.settings.outputs.has_php == 'true' }}
+      run: |
+        set -uo pipefail
+        files=0; failed=0
+        while IFS= read -r -d '' f; do
+          files=$((files + 1))
+          if ! out=$(php -l "$f" 2>&1); then
+            failed=$((failed + 1))
+            line=$(printf '%s\n' "$out" | sed -n 's/.* on line \([0-9][0-9]*\).*/\1/p' | head -1)
+            echo "::error file=${f#./}${line:+,line=$line}::$(printf '%s\n' "$out" | grep -m1 -i 'error' || printf '%s\n' "$out" | head -1)"
+          fi
+        done < <(find . -name '*.php' -not -name '*.blade.php' -not -path './vendor/*' -not -path './node_modules/*' -print0)
+        if [ "$failed" -gt 0 ]; then echo "::error::PHP lint found syntax errors in $failed of $files files."; exit 1; fi
+        echo "PHP lint: $files files, no syntax errors."
+
+    # The pipeline brings its own PHPCS, so every project gets the same version, and uses the project's config
+    - name: PHPCS
+      if: ${{ steps.settings.outputs.has_php == 'true' }}
+      env:
+        PHPCS: ${{ steps.settings.outputs.phpcs }}
+      run: |
+        set -euo pipefail
+        if [ "$PHPCS" = false ]; then echo "PHPCS is off (source.phpcs is false)."; exit 0; fi
+        config=""
+        for c in phpcs.xml phpcs.xml.dist .phpcs.xml ruleset.xml; do if [ -f "$c" ]; then config=$c; break; fi; done
+        [ -n "$config" ] || { echo "::error file=pipeline.json::PHPCS is on, but there is no PHPCS config (phpcs.xml). Add one, or set source.phpcs to false."; exit 1; }
+        args=(--standard="$config" --no-colors --report=full --runtime-set ignore_warnings_on_exit 1)
+        # A config without <file> entries scans the whole project; read as XML, so a commented-out <file> doesn't count
+        # shellcheck disable=SC2016 # the PHP code is meant to stay unexpanded
+        php -r '$x = @simplexml_load_file($argv[1]); exit($x && count($x->file) ? 0 : 1);' "$config" \
+          || args+=(--extensions=php --ignore='*/vendor/*,*/node_modules/*,*.blade.php' .)
+        echo "PHPCS: $config"
+        code=0; phpcs "${args[@]}" || code=$?
+        case $code in
+          0) ;;
+          1|2) echo "::error::PHPCS found coding standard errors. phpcbf fixes most of them; or set source.phpcs to false."; exit 1 ;;
+          *) echo "::error file=$config::PHPCS couldn't run with $config (see above). The pipeline supports PHPCS's built-in standards only, such as PSR12; a ruleset that uses WordPress (WPCS), PHPCompatibility or another external standard can't run here."; exit 1 ;;
+        esac
 
     - name: Install Composer dependencies
       if: ${{ steps.settings.outputs.composer == 'true' }}
@@ -194,6 +248,7 @@ jobs:
         /composer.lock
         /phpcs.xml
         /phpcs.xml.dist
+        /ruleset.xml
         EOF
         jq -r '.source.exclude // [] | .[]' pipeline.json >> "$RUNNER_TEMP/excludes"
 
