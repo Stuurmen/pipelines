@@ -16,9 +16,9 @@ On every push to the staging or production branch, the workflow:
 
 1. Reads `pipeline.json` and fails the run if it is missing or invalid, or if the branch belongs to neither environment. A green run always means something was deployed.
 2. Installs the Node dependencies with yarn or npm, runs `build:production` when the project has it (otherwise `build`), then `npm test`.
-3. Lints every PHP file with `php -l`, then runs PHPCS with the project's own config (`phpcs.xml`, `phpcs.xml.dist`, `.phpcs.xml` or `ruleset.xml`). Errors fail the run; warnings are reported but don't.
+3. Lints every PHP file with `php -l` on the project's PHP version, then runs PHPCS with the project's own config (`phpcs.xml`, `phpcs.xml.dist`, `.phpcs.xml` or `ruleset.xml`). Errors fail the run; warnings are reported but don't.
 4. Runs `composer install --no-dev` when `source.composer` is on.
-5. Copies the files into a clean release, leaving out what a server should never serve: every top-level dotfile except `.htaccess` (so `.git/`, `.github/`, `.cache-loader/` and editor and linter config), `node_modules/`, `pipeline.json`, `.env` files, Markdown files, `phpcs.xml`, and the package and Composer manifests and lockfiles.
+5. Copies the files into a clean release, leaving out what a server should never serve: every top-level dotfile except `.htaccess` (so `.git/`, `.github/`, `.cache-loader/` and editor and linter config), `node_modules/`, `pipeline.json`, `.env` files, Markdown files, PHPCS configs, and the package and Composer manifests and lockfiles.
 6. Uploads the release with rsync over SSH.
 
 Only one deploy per environment runs at a time, and each one shows up under Environments in the project's repository.
@@ -94,8 +94,8 @@ Under `source`:
 | `path` | `""` (the whole repository) | Folder to deploy, for example `dist/`. |
 | `package_manager` | `""` (no install) | `yarn` or `npm`. Yarn 2 and later only work when the project pins its version with `yarn set version` (`yarnPath` in `.yarnrc.yml`); otherwise the runner's Yarn 1 can't read the lockfile. |
 | `composer` | `false` | Run `composer install --no-dev` and deploy `vendor/`. When off, `vendor/` on the server is never touched. Composer 2.2 and later refuse a lockfile without an `allow-plugins` section, which older projects often lack: add `config.allow-plugins` to `composer.json` and run `composer update --lock` before you turn this on. |
-| `php_version` | `8.3` | PHP version for PHP lint, PHPCS and Composer. Required when `composer` is on. Use a version every package in `composer.lock` accepts. |
-| `phpcs` | `true` | Run PHPCS. The pipeline brings PHPCS 3.13.6 and uses the project's config; a config without `<file>` entries scans the whole project. Set to `false` only for a project that doesn't pass yet. |
+| `php_version` | | The PHP version the server runs, used for PHP lint, PHPCS and Composer. Required when the project has PHP files or `composer` is on. Use a version every package in `composer.lock` accepts. |
+| `phpcs` | `true` | Run PHPCS. The pipeline brings PHPCS 3.13.6 and uses the project's config; a config without `<file>` entries scans the whole project. Only PHPCS's built-in standards (such as PSR12) are supported; a ruleset that uses WPCS or another external standard fails with a message saying so. Set to `false` only for a project that doesn't pass yet. |
 | `delete` | `false` | Remove files on the server that are no longer in the release. Refused when `path` points at a shared folder such as `themes` or `public_html`. |
 | `exclude` | `[]` | Extra rsync patterns to leave out of the release, for example `["/resources/assets/"]`. |
 
@@ -114,11 +114,12 @@ jobs:
 ### Moving from v2.1.x
 
 1. Point `uses:` at `deploy-v2.2.0.yml@v2.2.0`.
-2. PHPCS is on by default, and projects that were never checked usually fail it. Run `phpcbf` with the project's config to fix layout errors, exclude rules the code can't follow in its `phpcs.xml`, and check the result on staging. Until the project passes, set `"phpcs": false` in `pipeline.json`.
+2. Add `php_version` under `source` in `pipeline.json`: the PHP version the server runs. A project with PHP files fails without it.
+3. PHPCS is on by default, and projects that were never checked usually fail it. Run `phpcbf` with the project's config to fix layout errors, exclude rules the code can't follow in its `phpcs.xml`, and check the result on staging. Until the project passes, set `"phpcs": false` in `pipeline.json`.
 
 ### Migrating from v2.0.0
 
-1. Point `uses:` at `deploy-v2.2.0.yml@v2.2.0`. `pipeline.json` needs no changes, but PHPCS is on by default: see step 2 of [Moving from v2.1.x](#moving-from-v21x).
+1. Point `uses:` at `deploy-v2.2.0.yml@v2.2.0`. Then follow steps 2 and 3 of [Moving from v2.1.x](#moving-from-v21x): `php_version` and PHPCS.
 2. Check what changes for the project:
    - Projects with a `build:production` script now ship that build instead of the development build.
    - `pipeline.json`, `README.md`, `package.json` and the other files listed above are no longer copied, and the first deploy removes the `pipeline.json` that v2.0.0 left on the server.
@@ -126,7 +127,7 @@ jobs:
 
 ## Testing
 
-`test/run.sh` runs the real workflow with [act](https://github.com/nektos/act) against a throwaway SSH server in Docker. It covers a staging deploy with Composer, a production deploy with `delete`, a dry run, Yarn 1 and Yarn 4 projects, PHPCS switched off and a `ruleset.xml` without file list, and the cases that must fail: an unknown branch, invalid JSON, a PHP syntax error, a PHPCS error, a missing PHPCS config, an unsafe path, and `delete` on a shared folder.
+`test/run.sh` runs the real workflow with [act](https://github.com/nektos/act) against a throwaway SSH server in Docker. It covers a staging deploy with Composer, a production deploy with `delete`, a dry run, Yarn 1 and Yarn 4 projects, PHPCS switched off and a `ruleset.xml` without file list, and the cases that must fail: an unknown branch, invalid JSON, a PHP syntax error, a PHPCS error, a missing PHPCS config, `phpcs` as a string, a missing `php_version`, a ruleset with an external standard, an unsafe path, and `delete` on a shared folder.
 
 ```bash
 brew install act

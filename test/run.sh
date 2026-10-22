@@ -62,7 +62,7 @@ config() {
   jq -n --arg path "$2" --argjson source "$extra" '{
     production: { branch: "master", host: "sshd", port: "22", username: "deploy", path: $path, node_version: "20" },
     staging:    { branch: "dev",    host: "sshd", port: "22", username: "deploy", path: $path, node_version: "20" },
-    source: ({ path: "", package_manager: "npm" } + $source)
+    source: ({ path: "", package_manager: "npm", php_version: "8.3" } + $source)
   }'
 }
 
@@ -167,6 +167,10 @@ BAD_STYLE='printf "<?php\nfunction fixture(){return 1;}\n" > functions.php'
 php_syntax_error()  { PROJECT_SETUP='printf "<?php\nfunction (\n" > broken.php' expect_failure n dev "$(config staging ./public/wp-content/themes/n)" "PHP lint found syntax errors"; }
 phpcs_violation()   { PROJECT_SETUP="$BAD_STYLE" expect_failure o dev "$(config staging ./public/wp-content/themes/o)" "PHPCS found coding standard errors"; }
 phpcs_without_config() { PROJECT_SETUP='rm phpcs.xml' expect_failure p dev "$(config staging ./public/wp-content/themes/p)" "no PHPCS config"; }
+phpcs_as_string()   { expect_failure s dev "$(config staging ./public/wp-content/themes/s '{"phpcs": "false"}')" "source.phpcs must be true or false"; }
+php_version_missing() { expect_failure t dev "$(config staging ./public/wp-content/themes/t '{"php_version": null}')" "source.php_version is required"; }
+# A ruleset that uses a standard PHPCS doesn't ship with (WPCS): a clear error instead of "coding standard errors"
+external_standard() { PROJECT_SETUP='printf "<?xml version=\"1.0\"?>\n<ruleset name=\"WP\"><file>functions.php</file><rule ref=\"WordPress\"/></ruleset>\n" > phpcs.xml' expect_failure u dev "$(config staging ./public/wp-content/themes/u)" "built-in standards"; }
 
 phpcs_disabled() {
   server "mkdir -p $THEMES/q && chown -R deploy $THEMES/q"
@@ -177,13 +181,14 @@ phpcs_disabled() {
   return $ok
 }
 
-# A ruleset.xml that names no files: the pipeline scans the whole project
+# A ruleset.xml that names no files (one is commented out): the pipeline scans the whole project
 ruleset_without_files() {
   server "mkdir -p $THEMES/r && chown -R deploy $THEMES/r"
-  local dir; dir="$(PROJECT_SETUP='printf "<?xml version=\"1.0\"?>\n<ruleset name=\"Old\"><rule ref=\"PSR2\"/></ruleset>\n" > ruleset.xml && rm phpcs.xml' project dev "$(config staging ./public/wp-content/themes/r)")"
+  local dir; dir="$(PROJECT_SETUP='printf "<?xml version=\"1.0\"?>\n<ruleset name=\"Old\"><!-- <file>app</file> --><rule ref=\"PSR2\"/></ruleset>\n" > ruleset.xml && rm phpcs.xml' project dev "$(config staging ./public/wp-content/themes/r)")"
   local ok=0
   check "run succeeds" 'run_act "$dir"' || ok=1
   check "PHPCS used ruleset.xml" 'grep -q "PHPCS: ruleset.xml" "$dir.log"' || ok=1
+  check "ruleset.xml not on server" '! exists r/ruleset.xml' || ok=1
   return $ok
 }
 
@@ -202,6 +207,9 @@ scenario yarn4_project yarn4_project
 scenario php_syntax_error php_syntax_error
 scenario phpcs_violation phpcs_violation
 scenario phpcs_without_config phpcs_without_config
+scenario phpcs_as_string phpcs_as_string
+scenario php_version_missing php_version_missing
+scenario external_standard external_standard
 scenario phpcs_disabled phpcs_disabled
 scenario ruleset_without_files ruleset_without_files
 
